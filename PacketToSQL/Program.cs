@@ -1,4 +1,5 @@
-﻿using PacketToSQL.Helpers;
+﻿using System.Text.Json;
+using PacketToSQL.Helpers;
 using PacketToSQL.MapleShark2_Files;
 using PacketToSQL.Types;
 
@@ -54,7 +55,9 @@ foreach (string file in files)
             case 0:
                 Shop shop = ReadShop(packet);
                 lastShopId = shop.Id;
-                shops[lastShopId] = (shop, new());
+                if (!shops.ContainsKey(lastShopId)) {
+                    shops[lastShopId] = (shop, new());
+                }
                 break;
             case 1:
                 if (lastShopId == -1)
@@ -71,7 +74,13 @@ foreach (string file in files)
                 }
 
                 List<ShopItem> items = ReadShopItemKms2(packet);
-                shops[lastShopId].Item2.AddRange(items);
+                foreach (ShopItem item in items) {
+                    if (shops[lastShopId].Item2.Any(x => x.ItemId == item.ItemId && x.Rarity == item.Rarity))
+                    {
+                        continue;
+                    }
+                    shops[lastShopId].Item2.Add(item);
+                }
 
                 break;
             case 6:
@@ -103,84 +112,60 @@ Shop ReadShop(MaplePacket packet)
     packet.ReadInt();
     int id = packet.ReadInt();
     long nextRestock = packet.ReadLong();
-    nextRestock = 1666483200; // change restock of all shops to be at 12 AM GMT
     packet.ReadInt();
     int itemCount = packet.ReadShort();
     int category = packet.ReadInt();
-    bool openWallet = packet.ReadBool();
-    bool disableBuyBack = packet.ReadBool();
-    bool canRestock = packet.ReadBool();
-    bool randomizeOrder = packet.ReadBool();
+    byte openWallet = packet.ReadByte();
+    byte disableBuyBack = packet.ReadByte();
+    byte canRestock = packet.ReadByte();
+    byte randomizeOrder = packet.ReadByte();
     ShopType shopType = (ShopType) packet.ReadByte();
-    bool hideUnuseable = packet.ReadBool();
-    bool hideStats = packet.ReadBool();
+    byte hideUnuseable = packet.ReadByte();
+    byte hideStats = packet.ReadByte();
     packet.ReadBool();
-    bool displayNew = packet.ReadBool();
+    byte displayNew = packet.ReadByte();
     string name = packet.ReadString();
-    byte restockCurrencyType = 0;
-    byte excessRestockCurrencyType = 0;
-    int restockCost = 0;
-    bool enableRestockCostMultiplier = false;
-    int totalRestockCount = 0;
-    byte restockInterval = 0;
-    bool disableInstantRestock = false;
-    bool persistantInventory = false;
-    int pullCount = 0;
-    int restockMinInterval = 0;
 
-    if (canRestock)
+    ShopRestockData data = null;
+    if (canRestock == 1)
     {
-        restockCurrencyType = packet.ReadByte();
-        excessRestockCurrencyType = packet.ReadByte();
+
+        ShopCurrencyType restockCurrencyType = (ShopCurrencyType) packet.ReadByte();
+        ShopCurrencyType excessRestockCurrencyType = (ShopCurrencyType) packet.ReadByte();
         packet.ReadInt();
-        restockCost = packet.ReadInt();
-        enableRestockCostMultiplier = packet.ReadBool();
-        totalRestockCount = packet.ReadInt();
-        restockInterval = packet.ReadByte();
-        disableInstantRestock = packet.ReadBool();
-        persistantInventory = packet.ReadBool();
-        pullCount = itemCount;
-        restockMinInterval = restockInterval switch
-        {
-            0 => // minutes
-                1,
-            1 => // days
-                1440,
-            2 => // weeks
-                10080,
-            3 => 43200,
-            _ => restockMinInterval
+        int restockCost = packet.ReadInt();
+        bool enableRestockCostMultiplier = packet.ReadBool();
+        int totalRestockCount = packet.ReadInt();
+        ShopRestockInterval restockInterval = (ShopRestockInterval) packet.ReadByte();
+        bool disableInstantRestock = packet.ReadBool();
+        bool persistantInventory = packet.ReadBool();
+        data = new ShopRestockData() {
+            CurrencyType = restockCurrencyType,
+            ExcessCurrencyType = excessRestockCurrencyType,
+            Cost = restockCost,
+            EnableCostMultiplier = enableRestockCostMultiplier,
+            RestockCount = totalRestockCount,
+            Interval = restockInterval,
+            DisableInstantRestock = disableInstantRestock,
+            PersistantInventory = persistantInventory,
         };
-    }
-    else
-    {
-        nextRestock = 0;
+
     }
 
     return new()
     {
         HideUnuseable = hideUnuseable,
         CanRestock = canRestock,
-        Category = category,
+        CategoryId = category,
         Id = id,
         Name = name,
-        NextRestock = nextRestock,
         DisableBuyback = disableBuyBack,
-        ShopType = shopType,
+        Skin = shopType,
         OpenWallet = openWallet,
         RandomizeOrder = randomizeOrder,
         HideStats = hideStats,
         DisplayNew = displayNew,
-        RestockCurrencyType = restockCurrencyType,
-        ExcessRestockCurrencyType = excessRestockCurrencyType,
-        RestockCost = restockCost,
-        EnableRestockCostMultiplier = enableRestockCostMultiplier,
-        TotalRestockCount = totalRestockCount,
-        RestockInterval = restockInterval,
-        DisableInstantRestock = disableInstantRestock,
-        PersistantInventory = persistantInventory,
-        PullCount = pullCount,
-        RestockMinInterval = restockMinInterval
+        RestockData = data,
     };
 }
 
@@ -211,14 +196,17 @@ async void CreateShopSqlFile(Shop shop)
 {
     string sqlFolder = Path.Combine(appPath, "SQL Files");
     Directory.CreateDirectory(sqlFolder);
+    string restockData = JsonSerializer.Serialize(shop.RestockData);
 
-    string shopsFilePath = Path.Combine(sqlFolder, "Shops.sql");
+    string shopsFilePath = Path.Combine(sqlFolder, "Shop.sql");
 
     if (!File.Exists(shopsFilePath))
     {
         File.WriteAllLines(shopsFilePath, new[]
         {
-            "-- SQL File created by PacketToSQL app by tDcc#0568", "INSERT INTO `shops` VALUES"
+            "-- SQL File created by PacketToSQL app by tDcc#0568", "INSERT INTO `game-server`.`shop` (`Id`,`CategoryId`, `Name`, `Skin`, `HideUnuseable`,"
+                                                                   + "`HideStats`, `DisableBuyback`, `OpenWallet`, `DisplayNew`, `RandomizeOrder`, `RestockData`)"
+                                                                   + "VALUES"
         });
     }
 
@@ -226,10 +214,9 @@ async void CreateShopSqlFile(Shop shop)
 
     string[] lines =
     {
-        $"({shop.Id}, {shop.Category}, '{shop.Name}', {(byte) shop.ShopType}, {(shop.HideUnuseable ? "1" : "0")}, {(shop.HideStats ? "1" : "0")}, " +
-        $"{(shop.DisableBuyback ? "1" : "0")}, {(shop.OpenWallet ? "1" : "0")}, {(shop.DisplayNew ? "1" : "0")}, {(shop.RandomizeOrder ? "1" : "0")}, {(shop.CanRestock ? "1" : "0")}, {shop.NextRestock}, {shop.RestockMinInterval}, " +
-        $"{shop.RestockInterval}, {shop.RestockCurrencyType}, {shop.ExcessRestockCurrencyType}, {shop.RestockCost}, {(shop.EnableRestockCostMultiplier ? "1" : "0")}, " +
-        $"{(shop.DisableInstantRestock ? "1" : "0")}, {(shop.PersistantInventory ? "1" : "0")}, {shop.PullCount})," +
+        $"({shop.Id}, {shop.CategoryId}, '{shop.Name}', {(byte) shop.Skin}, {shop.HideUnuseable}, {shop.HideStats}, " +
+        $"{shop.DisableBuyback}, {shop.OpenWallet}, {shop.DisplayNew}, {shop.RandomizeOrder}, " +
+        $"'{restockData}')," +
         "" // new line
     };
 
@@ -244,18 +231,18 @@ async void CreateShopItemsSqlFile(List<ShopItem> items, int shopId)
     string sqlFolder = Path.Combine(appPath, "SQL Files");
     Directory.CreateDirectory(sqlFolder);
 
-    string shopsItemsFilePath = Path.Combine(sqlFolder, "ShopsItems.sql");
+    string shopsItemsFilePath = Path.Combine(sqlFolder, "ShopsItem.sql");
 
     if (!File.Exists(shopsItemsFilePath))
     {
         File.WriteAllLines(shopsItemsFilePath, new[]
         {
             "-- SQL File created by PacketToSQL app by tDcc#0568",
-            @"INSERT INTO `shop_items` (`auto_preview_equip`, `category`, `label`, `guild_trophy`, `item_id`, `rarity`, `price`,
-                            `quantity`, `required_achievement_grade`, `required_achievement_id`,
-                            `required_championship_grade`, `required_championship_join_count`, `required_fame_grade`,
-                            `required_guild_merchant_level`, `required_guild_merchant_type`, `required_item_id`,
-                            `required_quest_alliance`, `sale_price`, `shop_id`, `stock_count`, `currency_id`, `currency_type`)
+            @"INSERT INTO `game-server`.`shop-item` (`ShopId`, `ItemId`, `CurrencyType`, `CurrencyItemId`, `Price`, `SalePrice`,
+                            `Rarity`, `StockCount`, `Category`,
+                            `RequireGuildTrophy`, `RequireAchievementId`, `RequireAchievementRank`,
+                            `RequireChampionshipGrade`, `RequireChampionshipJoinCount`, `RequireGuildMerchantType`,
+                            `RequireGuildMerchantLevel`, `Quantity`, `Label`, `CurrencyIdString`, `RequireQuestAllianceId`, `RequireFameGrade`, `AutoPreviewEquip`)
 VALUES"
         });
     }
@@ -269,11 +256,11 @@ VALUES"
 
     foreach (ShopItem shopItem in items)
     {
-        lines.Add($"({(shopItem.AutoPreviewEquip ? "1" : "0")}, '{shopItem.Category}', {(int) shopItem.Label}, {shopItem.GuildTrophy}, {shopItem.ItemId}, " +
-                  $"{shopItem.Rarity}, {shopItem.Price}, {shopItem.Quantity}, {shopItem.RequiredAchievementGrade}, {shopItem.RequiredAchievementId}, " +
-                  $"{shopItem.RequiredChampionshipGrade}, {shopItem.RequiredChampionshipJoinCount}, {shopItem.RequiredFameGrade}, " +
-                  $"{shopItem.RequiredGuildMerchantLevel}, {shopItem.RequiredGuildMerchantType}, {shopItem.RequiredItemId}, {shopItem.RequiredQuestAlliance}, " +
-                  $"{shopItem.SalePrice}, {shopId}, {shopItem.StockCount}, '{shopItem.CurrencyId}', {(int) shopItem.CurrencyType}),");
+        lines.Add($"({shopId}, {shopItem.ItemId}, {(byte) shopItem.CurrencyType}, {shopItem.CurrencyItemId}, {shopItem.Price}, " +
+                  $"{shopItem.SalePrice}, {shopItem.Rarity}, {shopItem.StockCount}, '{shopItem.Category}', {shopItem.RequireGuildTrophy}, " +
+                  $"{shopItem.RequireAchievementId}, {shopItem.RequireAchievementRank}, {shopItem.RequireChampionshipGrade}, " +
+                  $"{shopItem.RequireChampionshipJoinCount}, {shopItem.RequireGuildMerchantType}, {shopItem.RequireGuildMerchantLevel}, {shopItem.Quantity}, " +
+                  $"{(byte) shopItem.Label}, '{shopItem.CurrencyIdString}', {shopItem.RequireQuestAllianceId}, {shopItem.RequireFameGrade}, {shopItem.AutoPreviewEquip}),");
     }
 
     lines.Add("");
@@ -313,31 +300,30 @@ ShopItem ReadItemShop(MaplePacket maplePacket)
     string currencyId = maplePacket.ReadString();
     short requiredQuestAlliance = maplePacket.ReadShort();
     int requiredFameGrade = maplePacket.ReadInt();
-    bool autoPreviewEquip = maplePacket.ReadBool();
+    byte autoPreviewEquip = maplePacket.ReadByte();
     maplePacket.ReadByte();
     return new()
     {
-        AutoPreviewEquip = autoPreviewEquip,
-        Category = category,
-        Label = (ShopItemLabel) flag,
-        GuildTrophy = guildTrophy,
         ItemId = itemId,
-        Rarity = itemRank,
-        Price = price,
-        RequiredAchievementGrade = requiredAchievementGrade,
-        RequiredAchievementId = requiredAchievementId,
-        RequiredChampionshipGrade = requiredChampionshipGrade,
-        RequiredChampionshipJoinCount = requiredChampionshipJoinCount,
-        RequiredFameGrade = requiredFameGrade,
-        RequiredGuildMerchantLevel = requiredGuildMerchantLevel,
-        RequiredGuildMerchantType = requiredGuildMerchantType,
-        RequiredItemId = requiredItemId,
-        RequiredQuestAlliance = requiredQuestAlliance,
-        SalePrice = salePrice,
-        StockCount = stockCount,
-        StockPurchased = stockPurchased,
-        CurrencyId = currencyId,
         CurrencyType = (ShopCurrencyType) tokenType,
-        Quantity = quantity
+        CurrencyItemId = requiredItemId,
+        Price = price,
+        SalePrice = salePrice,
+        Rarity = itemRank,
+        StockCount = stockCount,
+        Category = category,
+        RequireGuildTrophy = guildTrophy,
+        RequireAchievementId = requiredAchievementId,
+        RequireAchievementRank = requiredAchievementGrade,
+        RequireChampionshipGrade = requiredChampionshipGrade,
+        RequireChampionshipJoinCount = requiredChampionshipJoinCount,
+        RequireGuildMerchantType = requiredGuildMerchantType,
+        RequireGuildMerchantLevel = requiredGuildMerchantLevel,
+        Quantity = quantity,
+        Label = (ShopItemLabel) flag,
+        CurrencyIdString = currencyId,
+        RequireQuestAllianceId = requiredQuestAlliance,
+        RequireFameGrade = requiredFameGrade,
+        AutoPreviewEquip = autoPreviewEquip,
     };
 }
